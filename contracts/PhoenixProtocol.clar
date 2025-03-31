@@ -134,37 +134,26 @@
   )
 )
 
-;; Multi-beneficiary allocation creation
-(define-public (create-branched-allocation (branches (list 5 { target-entity: principal, share-percentage: uint })) (resource-quantity uint))
+;; Provider resource retrieval for expired allocations
+(define-public (retrieve-expired-allocation (phoenix-id uint))
   (begin
-    (asserts! (> resource-quantity u0) ERROR_PARAMETER_INVALID)
-    (asserts! (> (len branches) u0) ERROR_PARAMETER_INVALID)
-    (asserts! (<= (len branches) MULTI_BENEFICIARY_LIMIT) ERROR_BENEFICIARY_OVERFLOW)
-
+    (asserts! (verify-allocation-exists phoenix-id) ERROR_PARAMETER_INVALID)
     (let
       (
-        (total-percentage (fold + (map extract-allocation-share branches) u0))
+        (allocation-record (unwrap! (map-get? ResourceAllocations { phoenix-id: phoenix-id }) ERROR_ENTITY_MISSING))
+        (provider (get provider allocation-record))
+        (resource-amount (get resource-amount allocation-record))
       )
-      (asserts! (is-eq total-percentage u100) ERROR_ALLOCATION_IMBALANCE)
-
-      (match (stx-transfer? resource-quantity tx-sender (as-contract tx-sender))
+      (asserts! (is-eq tx-sender GOVERNANCE_CONTROLLER) ERROR_ACCESS_DENIED)
+      (asserts! (> block-height (get conclusion-block allocation-record)) ERROR_TIMELOCK_VIOLATION)
+      (match (stx-transfer? resource-amount (as-contract tx-sender) provider)
         success
-          (let
-            (
-              (branch-id (+ (var-get current-branch-id) u1))
+          (begin
+            (map-set ResourceAllocations
+              { phoenix-id: phoenix-id }
+              (merge allocation-record { lifecycle-state: "reverted" })
             )
-            (map-set BranchedResourceAllocations
-              { branch-id: branch-id }
-              {
-                provider: tx-sender,
-                branches: branches,
-                aggregate-resources: resource-quantity,
-                formation-timestamp: block-height,
-                branch-status: "pending"
-              }
-            )
-            (var-set current-branch-id branch-id)
-            (ok branch-id)
+            (ok true)
           )
         error ERROR_OPERATION_FAILURE
       )
@@ -172,3 +161,32 @@
   )
 )
 
+;; Provider-initiated allocation termination
+(define-public (terminate-allocation (phoenix-id uint))
+  (begin
+    (asserts! (verify-allocation-exists phoenix-id) ERROR_PARAMETER_INVALID)
+    (let
+      (
+        (allocation-record (unwrap! (map-get? ResourceAllocations { phoenix-id: phoenix-id }) ERROR_ENTITY_MISSING))
+        (provider (get provider allocation-record))
+        (total-resources (get resource-amount allocation-record))
+        (completed-phases (get phase-completions allocation-record))
+        (remaining-resources (- total-resources (* (/ total-resources (len (get allocation-phases allocation-record))) completed-phases)))
+      )
+      (asserts! (is-eq tx-sender provider) ERROR_ACCESS_DENIED)
+      (asserts! (< block-height (get conclusion-block allocation-record)) ERROR_TIMELOCK_VIOLATION)
+      (asserts! (is-eq (get lifecycle-state allocation-record) "active") ERROR_ASSETS_ALREADY_ALLOCATED)
+      (match (stx-transfer? remaining-resources (as-contract tx-sender) provider)
+        success
+          (begin
+            (map-set ResourceAllocations
+              { phoenix-id: phoenix-id }
+              (merge allocation-record { lifecycle-state: "terminated" })
+            )
+            (ok true)
+          )
+        error ERROR_OPERATION_FAILURE
+      )
+    )
+  )
+)
