@@ -134,3 +134,41 @@
   )
 )
 
+;; Multi-beneficiary allocation creation
+(define-public (create-branched-allocation (branches (list 5 { target-entity: principal, share-percentage: uint })) (resource-quantity uint))
+  (begin
+    (asserts! (> resource-quantity u0) ERROR_PARAMETER_INVALID)
+    (asserts! (> (len branches) u0) ERROR_PARAMETER_INVALID)
+    (asserts! (<= (len branches) MULTI_BENEFICIARY_LIMIT) ERROR_BENEFICIARY_OVERFLOW)
+
+    (let
+      (
+        (total-percentage (fold + (map extract-allocation-share branches) u0))
+      )
+      (asserts! (is-eq total-percentage u100) ERROR_ALLOCATION_IMBALANCE)
+
+      (match (stx-transfer? resource-quantity tx-sender (as-contract tx-sender))
+        success
+          (let
+            (
+              (branch-id (+ (var-get current-branch-id) u1))
+            )
+            (map-set BranchedResourceAllocations
+              { branch-id: branch-id }
+              {
+                provider: tx-sender,
+                branches: branches,
+                aggregate-resources: resource-quantity,
+                formation-timestamp: block-height,
+                branch-status: "pending"
+              }
+            )
+            (var-set current-branch-id branch-id)
+            (ok branch-id)
+          )
+        error ERROR_OPERATION_FAILURE
+      )
+    )
+  )
+)
+
