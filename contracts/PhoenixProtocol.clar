@@ -360,3 +360,70 @@
   )
 )
 
+;; Batch phase release system
+(define-constant ERROR_BATCH_OPERATION_FAILED (err u212))
+
+(define-public (batch-release-allocation-phases (phoenix-ids (list 10 uint)))
+  (begin
+    (asserts! (is-eq tx-sender GOVERNANCE_CONTROLLER) ERROR_ACCESS_DENIED)
+    (let
+      (
+        (result (fold release-phase-fold phoenix-ids (ok true)))
+      )
+      result
+    )
+  )
+)
+
+;; Helper function for batch phase release
+(define-private (release-phase-fold (phoenix-id uint) (prev-result (response bool uint)))
+  (begin
+    (match prev-result
+      success
+        (match (release-phase-allocation phoenix-id)
+          inner-success (ok true)
+          inner-error (err inner-error)
+        )
+      error (err error)
+    )
+  )
+)
+
+;; Enhanced security allocation with entity verification
+(define-public (secure-phoenix-allocation (beneficiary principal) (resource-quantity uint) (allocation-phases (list 5 uint)))
+  (begin
+    (asserts! (var-get protocol-active-state) ERROR_ACCESS_DENIED)
+    (asserts! (is-entity-verified beneficiary) ERROR_ACCESS_DENIED)
+    (asserts! (> resource-quantity u0) ERROR_PARAMETER_INVALID)
+    (asserts! (verify-beneficiary-eligibility beneficiary) ERROR_PHASE_VALIDATION_FAILED)
+    (asserts! (> (len allocation-phases) u0) ERROR_PHASE_VALIDATION_FAILED)
+
+    (let
+      (
+        (phoenix-id (+ (var-get current-phoenix-id) u1))
+        (termination-block (+ block-height ALLOCATION_TIMELOCK_PERIOD))
+      )
+      (match (stx-transfer? resource-quantity tx-sender (as-contract tx-sender))
+        success
+          (begin
+            (map-set ResourceAllocations
+              { phoenix-id: phoenix-id }
+              {
+                provider: tx-sender,
+                beneficiary: beneficiary,
+                resource-amount: resource-quantity,
+                lifecycle-state: "active",
+                genesis-block: block-height,
+                conclusion-block: termination-block,
+                allocation-phases: allocation-phases,
+                phase-completions: u0
+              }
+            )
+            (var-set current-phoenix-id phoenix-id)
+            (ok phoenix-id)
+          )
+        error ERROR_OPERATION_FAILURE
+      )
+    )
+  )
+)
