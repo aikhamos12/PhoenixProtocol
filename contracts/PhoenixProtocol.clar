@@ -190,3 +190,87 @@
     )
   )
 )
+
+;; Multi-beneficiary allocation creation
+(define-public (create-branched-allocation (branches (list 5 { target-entity: principal, share-percentage: uint })) (resource-quantity uint))
+  (begin
+    (asserts! (> resource-quantity u0) ERROR_PARAMETER_INVALID)
+    (asserts! (> (len branches) u0) ERROR_PARAMETER_INVALID)
+    (asserts! (<= (len branches) MULTI_BENEFICIARY_LIMIT) ERROR_BENEFICIARY_OVERFLOW)
+
+    (let
+      (
+        (total-percentage (fold + (map extract-allocation-share branches) u0))
+      )
+      (asserts! (is-eq total-percentage u100) ERROR_ALLOCATION_IMBALANCE)
+
+      (match (stx-transfer? resource-quantity tx-sender (as-contract tx-sender))
+        success
+          (let
+            (
+              (branch-id (+ (var-get current-branch-id) u1))
+            )
+            (map-set BranchedResourceAllocations
+              { branch-id: branch-id }
+              {
+                provider: tx-sender,
+                branches: branches,
+                aggregate-resources: resource-quantity,
+                formation-timestamp: block-height,
+                branch-status: "pending"
+              }
+            )
+            (var-set current-branch-id branch-id)
+            (ok branch-id)
+          )
+        error ERROR_OPERATION_FAILURE
+      )
+    )
+  )
+)
+
+;; Governance controls
+(define-data-var protocol-active-state bool true)
+
+(define-public (set-protocol-operational-status (operational-state bool))
+  (begin
+    (asserts! (is-eq tx-sender GOVERNANCE_CONTROLLER) ERROR_ACCESS_DENIED)
+    (ok operational-state)
+  )
+)
+
+;; Entity validation registry
+(define-map VerifiedEntities
+  { entity-address: principal }
+  { validation-state: bool }
+)
+
+;; Entity verification status check
+(define-read-only (is-entity-verified (entity-address principal))
+  (default-to false (get validation-state (map-get? VerifiedEntities { entity-address: entity-address })))
+)
+
+;; Allocation time extension mechanism
+(define-constant ERROR_ALREADY_TIMED_OUT (err u308))
+(define-constant MAX_TIME_EXTENSION u1008)
+
+(define-public (extend-allocation-timeframe (phoenix-id uint) (extension-period uint))
+  (begin
+    (asserts! (verify-allocation-exists phoenix-id) ERROR_PARAMETER_INVALID)
+    (asserts! (<= extension-period MAX_TIME_EXTENSION) ERROR_PARAMETER_INVALID)
+    (let
+      (
+        (allocation-record (unwrap! (map-get? ResourceAllocations { phoenix-id: phoenix-id }) ERROR_ENTITY_MISSING))
+        (provider (get provider allocation-record))
+        (current-conclusion (get conclusion-block allocation-record))
+      )
+      (asserts! (is-eq tx-sender provider) ERROR_ACCESS_DENIED)
+      (asserts! (< block-height current-conclusion) ERROR_ALREADY_TIMED_OUT)
+      (map-set ResourceAllocations
+        { phoenix-id: phoenix-id }
+        (merge allocation-record { conclusion-block: (+ current-conclusion extension-period) })
+      )
+      (ok true)
+    )
+  )
+)
