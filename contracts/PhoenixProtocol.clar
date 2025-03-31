@@ -274,3 +274,88 @@
     )
   )
 )
+
+;; Phase progression tracking system
+(define-constant ERROR_PROGRESS_DUPLICATE (err u210))
+(define-map PhaseProgressTracker
+  { phoenix-id: uint, phase-index: uint }
+  {
+    completion-percentage: uint,
+    phase-narrative: (string-ascii 200),
+    attestation-block: uint,
+    verification-data: (buff 32)
+  }
+)
+
+(define-public (record-phase-progress 
+                (phoenix-id uint) 
+                (phase-index uint) 
+                (completion-percentage uint) 
+                (phase-narrative (string-ascii 200))
+                (verification-data (buff 32)))
+  (begin
+    (asserts! (verify-allocation-exists phoenix-id) ERROR_PARAMETER_INVALID)
+    (asserts! (<= completion-percentage u100) ERROR_PARAMETER_INVALID)
+    (let
+      (
+        (allocation-record (unwrap! (map-get? ResourceAllocations { phoenix-id: phoenix-id }) ERROR_ENTITY_MISSING))
+        (allocation-phases (get allocation-phases allocation-record))
+        (beneficiary (get beneficiary allocation-record))
+      )
+      (asserts! (is-eq tx-sender beneficiary) ERROR_ACCESS_DENIED)
+      (asserts! (< phase-index (len allocation-phases)) ERROR_PHASE_VALIDATION_FAILED)
+      (asserts! (not (is-eq (get lifecycle-state allocation-record) "reverted")) ERROR_ASSETS_ALREADY_ALLOCATED)
+      (asserts! (< block-height (get conclusion-block allocation-record)) ERROR_TIMELOCK_VIOLATION)
+
+      ;; Check for existing 100% completion report
+      (match (map-get? PhaseProgressTracker { phoenix-id: phoenix-id, phase-index: phase-index })
+        prev-progress (asserts! (< (get completion-percentage prev-progress) u100) ERROR_PROGRESS_DUPLICATE)
+        true
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Allocation authority delegation system
+(define-constant ERROR_DELEGATION_EXISTS (err u211))
+(define-map AllocationAuthorityDelegates
+  { phoenix-id: uint }
+  {
+    delegate: principal,
+    termination-authority: bool,
+    extension-authority: bool,
+    supplement-authority: bool,
+    delegation-expiration: uint
+  }
+)
+
+(define-public (delegate-allocation-authority 
+                (phoenix-id uint) 
+                (delegate principal) 
+                (termination-authority bool)
+                (extension-authority bool)
+                (supplement-authority bool)
+                (delegation-period uint))
+  (begin
+    (asserts! (verify-allocation-exists phoenix-id) ERROR_PARAMETER_INVALID)
+    (asserts! (> delegation-period u0) ERROR_PARAMETER_INVALID)
+    (let
+      (
+        (allocation-record (unwrap! (map-get? ResourceAllocations { phoenix-id: phoenix-id }) ERROR_ENTITY_MISSING))
+        (provider (get provider allocation-record))
+        (delegation-expiration (+ block-height delegation-period))
+      )
+      (asserts! (is-eq tx-sender provider) ERROR_ACCESS_DENIED)
+      (asserts! (< block-height (get conclusion-block allocation-record)) ERROR_TIMELOCK_VIOLATION)
+      (asserts! (not (is-eq (get lifecycle-state allocation-record) "reverted")) ERROR_ASSETS_ALREADY_ALLOCATED)
+
+      ;; Check for existing delegation
+      (match (map-get? AllocationAuthorityDelegates { phoenix-id: phoenix-id })
+        existing-delegation (asserts! (< block-height (get delegation-expiration existing-delegation)) ERROR_DELEGATION_EXISTS)
+        true
+      )
+      (ok true)
+    )
+  )
+)
